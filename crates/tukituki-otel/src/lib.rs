@@ -5,12 +5,15 @@
 //!   formatting that matches the Go binary line-for-line.
 //! - `notify`: Unix-domain-socket gRPC server that pushes filtered error
 //!   events to attached TUIs.
+//! - `subscriber`: the client half of `notify` — a reconnecting
+//!   background thread the TUI uses to receive those events.
 //!
 //! Phase-5 scope of the port from `internal/otel/` in the Go tree.
 
 pub mod collector;
 pub mod notify;
 pub mod severity;
+pub mod subscriber;
 pub mod value;
 
 /// Generated protobuf modules. Re-exported through this single root

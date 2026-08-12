@@ -261,6 +261,55 @@ async fn collector_notify_socket_streams_errors() {
     }
 }
 
+#[tokio::test]
+async fn error_subscriber_helper_receives_events_after_late_collector_start() {
+    let port = free_port();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("otel-notify.sock");
+
+    // Spawn the subscriber BEFORE the collector exists — this is the
+    // TUI's startup order, and it exercises the dial-retry loop that
+    // was the whole point of porting `runOtelNotifySubscriber`.
+    let events = tukituki_otel::subscriber::spawn_error_subscriber(socket.clone());
+
+    let buf = Arc::new(StdMutex::new(Vec::<u8>::new()));
+    let writer = Box::new(SharedBuf(buf.clone()));
+    let mut c = Collector::new_with_output(port, "grpc".into(), SeverityNumber::Error, writer);
+    c.notify_socket = Some(socket.clone());
+
+    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+    let handle = tokio::spawn(c.run(cancel_rx));
+
+    wait_for_port(port).await;
+    wait_for_socket(&socket).await;
+
+    let otlp_endpoint = Endpoint::from_shared(format!("http://127.0.0.1:{port}")).unwrap();
+    let otlp_channel = otlp_endpoint.connect().await.expect("dial OTLP");
+    let mut logs_client = LogsServiceClient::new(otlp_channel);
+
+    // The subscriber redials on a 1s cadence and the hub only fans out
+    // to subscribers registered at publish time, so a single early
+    // export could land before the subscription exists and be
+    // (correctly) dropped. Keep exporting until an event comes through.
+    let mut got = None;
+    for _ in 0..50 {
+        let req = build_request("svc-sub", &[(SeverityNumber::Error, "sub boom")]);
+        logs_client.export(req).await.expect("Export");
+        sleep(Duration::from_millis(200)).await;
+        if let Ok(ev) = events.try_recv() {
+            got = Some(ev);
+            break;
+        }
+    }
+    let ev = got.expect("subscriber never received an event within 10s");
+    assert_eq!(ev.service_name, "svc-sub");
+    assert_eq!(ev.body, "sub boom");
+    assert_eq!(ev.severity, "ERROR");
+
+    let _ = cancel_tx.send(());
+    let _ = handle.await;
+}
+
 // ---------------------------------------------------------------------
 // Tiny HTTP POST helper — avoids pulling in reqwest just for one test.
 // ---------------------------------------------------------------------

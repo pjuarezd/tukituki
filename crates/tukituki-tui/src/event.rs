@@ -32,4 +32,12 @@ pub enum AppEvent {
         id: u64,
         summary: String,
     },
+    /// The otel-collector pushed an error event over the notify
+    /// socket. Bumps the `otel-errors` row's unread counter and arms
+    /// its blink unless that row is currently selected.
+    OtelError,
+    /// Blink-phase timer for the `otel-errors` row. Fired 500ms after
+    /// being armed; the handler toggles the phase and re-arms while
+    /// unread errors remain.
+    OtelBlink,
 }

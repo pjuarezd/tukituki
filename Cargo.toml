@@ -47,6 +47,7 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server"] }
 bytes = "1"
 http = "1"
+tower = { version = "0.5", features = ["util"] }
 
 tukituki-config = { path = "crates/tukituki-config" }
 tukituki-state = { path = "crates/tukituki-state" }

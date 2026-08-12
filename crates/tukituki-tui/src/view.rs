@@ -163,11 +163,28 @@ fn render_row<H: ManagerHandle>(r: &Row, app: &App<H>, is_sel: bool) -> Line<'st
                 .unwrap_or(Status::Unknown);
             let (icon, icon_style) = theme::status_icon(status);
             let indent = if group.is_empty() { "" } else { "  " };
+            // Unread otel errors decorate the row with a count and an
+            // alternating alert style (driven by the OtelBlink chain).
+            // Selection wins over the alert — and selecting the row
+            // also zeroes the count, so the two rarely coexist.
+            let otel_unread =
+                t.name == tukituki_process::OTEL_TARGET_NAME && app.unread_otel_errors > 0;
             let mut label_style = theme::normal_item();
             if is_sel {
                 label_style = theme::selected();
+            } else if otel_unread {
+                label_style = if app.otel_blink_on {
+                    theme::otel_alert()
+                } else {
+                    theme::otel_alert_off()
+                };
             }
-            let label = format!("{indent}{} ", t.name);
+            let name = if otel_unread {
+                format!("{} ({})", t.name, app.unread_otel_errors)
+            } else {
+                t.name.clone()
+            };
+            let label = format!("{indent}{name} ");
             let padded = pad_to(theme::SIDEBAR_WIDTH as usize - 4, &label);
             Line::from(vec![
                 Span::raw(" "),

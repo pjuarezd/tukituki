@@ -2517,6 +2517,7 @@ dependencies = [
  "shell-words",
  "tempfile",
  "tukituki-config",
+ "tukituki-otel",
  "tukituki-process",
  "tukituki-state",
 ]

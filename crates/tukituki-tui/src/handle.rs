@@ -39,6 +39,15 @@ pub trait ManagerHandle: Send + Sync + 'static {
     /// ensure a log tailer is running for each known process. Called
     /// in response to a state-file change event.
     fn reload_state_from_disk(&self);
+    /// Unix socket where the otel-collector pushes `ErrorEvent`s for
+    /// attached TUIs — mirrors Go's `OtelNotifySocket()`. The TUI
+    /// subscribes to it so the `otel-errors` row can blink on incoming
+    /// errors. `None` (the default) disables the subscriber; the real
+    /// Manager always returns the path, and the subscriber retries the
+    /// dial until a collector is actually listening.
+    fn otel_notify_socket(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 impl ManagerHandle for tukituki_process::Manager {
@@ -89,5 +98,8 @@ impl ManagerHandle for tukituki_process::Manager {
     }
     fn reload_state_from_disk(&self) {
         tukituki_process::Manager::reload_state_from_disk(self);
+    }
+    fn otel_notify_socket(&self) -> Option<PathBuf> {
+        Some(tukituki_process::Manager::otel_notify_socket(self))
     }
 }

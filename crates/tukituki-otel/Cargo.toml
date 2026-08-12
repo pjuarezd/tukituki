@@ -27,6 +27,9 @@ hyper-util = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 http = { workspace = true }
+# The notify-socket subscriber dials the UDS via
+# `Endpoint::connect_with_connector(tower::service_fn(..))`.
+tower = { workspace = true }
 
 [build-dependencies]
 # tonic 0.14 split codec-specific codegen out into tonic-prost-build;
@@ -42,4 +45,3 @@ protobuf-src = "2"
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
-tower = { version = "0.5", features = ["util"] }

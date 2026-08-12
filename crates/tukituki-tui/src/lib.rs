@@ -47,6 +47,33 @@ pub mod test_support {
     pub fn op_done(id: u64, summary: String) -> AppEvent {
         AppEvent::OpDone { id, summary }
     }
+    pub fn otel_error() -> AppEvent {
+        AppEvent::OtelError
+    }
+    pub fn otel_blink() -> AppEvent {
+        AppEvent::OtelBlink
+    }
+
+    /// Render the app into an off-screen buffer and return each row as
+    /// a plain string (styles dropped). Lets integration tests assert
+    /// on sidebar/log content without a real terminal.
+    pub fn render_to_lines<H: crate::ManagerHandle>(
+        app: &crate::App<H>,
+        width: u16,
+        height: u16,
+    ) -> Vec<String> {
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut term = ratatui::Terminal::new(backend).expect("test terminal");
+        term.draw(|f| crate::view::render(f, app)).expect("draw");
+        let buffer = term.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
 }
 
 use std::io;
@@ -204,6 +231,28 @@ pub fn start<H: ManagerHandle + Send + Sync + 'static>(
                 }
             })?;
     }
+    // Otel notify subscriber: receive `ErrorEvent`s pushed by the
+    // collector over its Unix notify socket and surface each one as an
+    // `OtelError` event so the otel-errors sidebar row can blink. The
+    // subscriber retries the dial forever, so a collector that comes up
+    // later (or restarts) is picked up transparently; when no collector
+    // ever runs, the retry loop just fails a cheap unix connect once a
+    // second. Blocking `send` (not `try_send`): error events are rare
+    // and each one the user asked to be alerted about.
+    if let Some(socket) = app.manager.otel_notify_socket() {
+        let events = tukituki_otel::subscriber::spawn_error_subscriber(socket);
+        let otel_tx = tx.clone();
+        thread::Builder::new()
+            .name("tukituki-tui-otel".into())
+            .spawn(move || {
+                while events.recv().is_ok() {
+                    if otel_tx.send(AppEvent::OtelError).is_err() {
+                        return;
+                    }
+                }
+            })?;
+    }
+
     // Backfill ring-buffer history into the TUI buffer so the right pane
     // isn't empty on first paint.
     app.backfill_logs();

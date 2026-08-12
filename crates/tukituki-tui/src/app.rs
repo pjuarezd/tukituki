@@ -24,6 +24,10 @@ use crate::rows::{Row, compute};
 /// scrollback than headless callers need.
 const TUI_RING: usize = 10_000;
 
+/// Half-period of the `otel-errors` row's alert blink. Matches Go's
+/// `otelBlinkInterval` (500ms).
+const OTEL_BLINK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
 pub struct App<H: ManagerHandle> {
     pub targets: Vec<RunTarget>,
     pub manager: Arc<H>,
@@ -50,6 +54,17 @@ pub struct App<H: ManagerHandle> {
     pub describe: Option<String>,
 
     pub last_height: u16,
+
+    /// Count of otel error events received since the user last had the
+    /// `otel-errors` row selected. Rendered as a ` (N)` suffix on the
+    /// row; reset to 0 the moment the user selects it.
+    pub unread_otel_errors: usize,
+    /// Blink phase — toggled every [`OTEL_BLINK_INTERVAL`] while
+    /// `unread_otel_errors > 0`. On = alert style, off = dim style.
+    pub otel_blink_on: bool,
+    /// True while a blink-tick chain is in flight; prevents stacking
+    /// multiple timer chains when more events arrive mid-blink.
+    pub otel_blinking: bool,
 
     /// Set to true by any handler that mutates user-visible state.
     /// The render loop reads + clears this flag — if no event has
@@ -246,6 +261,9 @@ impl<H: ManagerHandle> App<H> {
             help_visible: false,
             describe: None,
             last_height: 24,
+            unread_otel_errors: 0,
+            otel_blink_on: false,
+            otel_blinking: false,
             // Start dirty + urgent so the first iteration paints the
             // initial frame without waiting on the rate cap.
             dirty: true,
@@ -596,6 +614,34 @@ impl<H: ManagerHandle> App<H> {
                 self.urgent = true;
                 Continuation::cont()
             }
+            AppEvent::OtelError => {
+                // Events that land while the user is already looking at
+                // the otel-errors row are considered seen — no counter,
+                // no blink. Mirrors Go's otelErrorMsg handler.
+                if !self.is_otel_selected() {
+                    self.unread_otel_errors += 1;
+                    if !self.otel_blinking {
+                        self.otel_blinking = true;
+                        self.otel_blink_on = true;
+                        self.arm_otel_blink();
+                    }
+                    self.dirty = true;
+                    self.urgent = true;
+                }
+                Continuation::cont()
+            }
+            AppEvent::OtelBlink => {
+                if self.unread_otel_errors > 0 && !self.is_otel_selected() {
+                    self.otel_blink_on = !self.otel_blink_on;
+                    self.arm_otel_blink();
+                } else {
+                    // Seen (or nothing unread) — let the chain die.
+                    self.otel_blinking = false;
+                    self.otel_blink_on = false;
+                }
+                self.dirty = true;
+                Continuation::cont()
+            }
         }
     }
 
@@ -643,6 +689,37 @@ impl<H: ManagerHandle> App<H> {
         match self.rows.get(self.selected)? {
             Row::Target { target_idx, .. } => self.targets.get(*target_idx),
             Row::Folder { .. } | Row::Separator { .. } => None,
+        }
+    }
+
+    /// Is the virtual `otel-errors` row the current selection?
+    pub fn is_otel_selected(&self) -> bool {
+        self.selected_target_name().as_deref() == Some(tukituki_process::OTEL_TARGET_NAME)
+    }
+
+    /// Zero the unread count and stop the blink when the user has
+    /// navigated onto the otel-errors row. Safe to call from any
+    /// selection-changing handler. `otel_blinking` is left alone on
+    /// purpose: the in-flight tick chain sees `unread == 0` on its
+    /// next firing and shuts itself down.
+    pub fn mark_otel_seen_if_selected(&mut self) {
+        if self.is_otel_selected() {
+            self.unread_otel_errors = 0;
+            self.otel_blink_on = false;
+        }
+    }
+
+    /// One-shot 500ms timer whose firing lands back in the event loop
+    /// as `OtelBlink` — re-armed from that handler while the blink is
+    /// live, forming the same tick chain as Go's `otelBlinkTick`.
+    /// With no event sender attached (tests), this is a no-op and
+    /// tests drive `OtelBlink` events by hand.
+    fn arm_otel_blink(&self) {
+        if let Some(tx) = self.op_tx.clone() {
+            std::thread::spawn(move || {
+                std::thread::sleep(OTEL_BLINK_INTERVAL);
+                let _ = tx.send(AppEvent::OtelBlink);
+            });
         }
     }
 

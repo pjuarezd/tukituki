@@ -180,6 +180,8 @@ pub enum AppEventForTest {
     StateFileChange,
     FileChange,
     OpDone { id: u64, summary: String },
+    OtelError,
+    OtelBlink,
 }
 
 fn dispatch<H: ManagerHandle>(app: &mut App<H>, ev: AppEventForTest) -> bool {
@@ -193,6 +195,8 @@ fn dispatch<H: ManagerHandle>(app: &mut App<H>, ev: AppEventForTest) -> bool {
         AppEventForTest::StateFileChange => tukituki_tui::test_support::state_file_change(),
         AppEventForTest::FileChange => tukituki_tui::test_support::file_change(),
         AppEventForTest::OpDone { id, summary } => tukituki_tui::test_support::op_done(id, summary),
+        AppEventForTest::OtelError => tukituki_tui::test_support::otel_error(),
+        AppEventForTest::OtelBlink => tukituki_tui::test_support::otel_blink(),
     };
     app.handle(real).continue_loop
 }
@@ -1154,4 +1158,121 @@ fn restart_all_clears_per_target_buffers() {
     // starts, so a later target's cleanup can't kill an earlier target.
     assert_eq!(*mgr.stopped.lock().unwrap(), vec!["a", "b"]);
     assert_eq!(*mgr.started.lock().unwrap(), vec!["a", "b"]);
+}
+
+// ─── Otel error blink ────────────────────────────────────────────────────────
+//
+// The collector pushes an ErrorEvent over the notify socket for every
+// log record at/above the severity threshold; the TUI surfaces each as
+// an OtelError event. These tests pin the state machine that turns
+// those events into the sidebar's unread badge + blink — the piece
+// that was dropped in the Go→Rust port.
+
+/// App with a plain target selected (row 0) and the virtual
+/// `otel-errors` target sitting after the separator (row 2).
+fn make_otel_app() -> App<FakeManager> {
+    make_app(vec![target("api"), virtual_target("otel-errors")])
+}
+
+#[test]
+fn otel_error_increments_unread_and_arms_blink() {
+    let mut app = make_otel_app();
+    assert_eq!(app.unread_otel_errors, 0);
+
+    dispatch(&mut app, AppEventForTest::OtelError);
+    dispatch(&mut app, AppEventForTest::OtelError);
+
+    assert_eq!(app.unread_otel_errors, 2);
+    assert!(app.otel_blinking, "first error should arm the blink chain");
+    assert!(app.otel_blink_on, "blink starts in the 'on' phase");
+}
+
+#[test]
+fn otel_error_while_row_selected_is_marked_seen() {
+    let mut app = make_otel_app();
+    // Down from `api` skips the separator and lands on `otel-errors`.
+    dispatch(&mut app, key(KeyCode::Down));
+    assert_eq!(app.selected_target_name().as_deref(), Some("otel-errors"));
+
+    dispatch(&mut app, AppEventForTest::OtelError);
+
+    assert_eq!(app.unread_otel_errors, 0);
+    assert!(!app.otel_blinking);
+    assert!(!app.otel_blink_on);
+}
+
+#[test]
+fn otel_blink_toggles_phase_while_unread() {
+    let mut app = make_otel_app();
+    dispatch(&mut app, AppEventForTest::OtelError);
+    assert!(app.otel_blink_on);
+
+    dispatch(&mut app, AppEventForTest::OtelBlink);
+    assert!(!app.otel_blink_on, "tick flips on → off");
+    assert!(app.otel_blinking, "chain stays armed while unread > 0");
+
+    dispatch(&mut app, AppEventForTest::OtelBlink);
+    assert!(app.otel_blink_on, "next tick flips off → on");
+    assert!(app.otel_blinking);
+}
+
+#[test]
+fn otel_blink_chain_dies_once_errors_are_seen() {
+    let mut app = make_otel_app();
+    dispatch(&mut app, AppEventForTest::OtelError);
+    assert!(app.otel_blinking);
+
+    // Selecting the row consumes the unread badge immediately…
+    dispatch(&mut app, key(KeyCode::Down));
+    assert_eq!(app.selected_target_name().as_deref(), Some("otel-errors"));
+    assert_eq!(app.unread_otel_errors, 0);
+    assert!(!app.otel_blink_on);
+
+    // …and the still-in-flight tick shuts the chain down instead of
+    // re-arming.
+    dispatch(&mut app, AppEventForTest::OtelBlink);
+    assert!(!app.otel_blinking);
+    assert!(!app.otel_blink_on);
+}
+
+#[test]
+fn otel_errors_resume_blinking_after_navigating_away() {
+    let mut app = make_otel_app();
+    // Visit the otel row, then move back up to `api`.
+    dispatch(&mut app, key(KeyCode::Down));
+    dispatch(&mut app, key(KeyCode::Up));
+    dispatch(&mut app, AppEventForTest::OtelBlink); // retire the old chain
+    assert!(!app.otel_blinking);
+
+    dispatch(&mut app, AppEventForTest::OtelError);
+    assert_eq!(app.unread_otel_errors, 1);
+    assert!(app.otel_blinking, "a fresh error re-arms the blink");
+    assert!(app.otel_blink_on);
+}
+
+#[test]
+fn sidebar_renders_otel_unread_count() {
+    let mut app = make_otel_app();
+    dispatch(&mut app, AppEventForTest::OtelError);
+    dispatch(&mut app, AppEventForTest::OtelError);
+
+    let lines = tukituki_tui::test_support::render_to_lines(&app, 80, 20);
+    assert!(
+        lines.iter().any(|l| l.contains("otel-errors (2)")),
+        "sidebar should show the unread count, got:\n{}",
+        lines.join("\n")
+    );
+
+    // Selecting the row clears the badge from the next render.
+    dispatch(&mut app, key(KeyCode::Down));
+    let lines = tukituki_tui::test_support::render_to_lines(&app, 80, 20);
+    assert!(
+        lines.iter().any(|l| l.contains("otel-errors")),
+        "row itself still renders"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("otel-errors (")),
+        "badge should be gone once seen, got:\n{}",
+        lines.join("\n")
+    );
 }

@@ -96,6 +96,21 @@ pub fn footer_busy() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// "On" half of the unread-otel-errors blink: a bold red row that
+/// stands out against the rest of the sidebar.
+pub fn otel_alert() -> Style {
+    Style::default()
+        .fg(Color::Rgb(0xFF, 0x17, 0x44))
+        .add_modifier(Modifier::BOLD)
+}
+
+/// "Off" half of the blink: a dim version of the row, so alternating
+/// with [`otel_alert`] reads as a pulse without flickering the row out
+/// of existence.
+pub fn otel_alert_off() -> Style {
+    Style::default().fg(Color::Rgb(0x54, 0x6E, 0x7A))
+}
+
 pub fn status_icon(s: tukituki_state::Status) -> (&'static str, Style) {
     use tukituki_state::Status as S;
     match s {

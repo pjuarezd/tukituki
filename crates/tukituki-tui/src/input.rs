@@ -191,6 +191,9 @@ fn move_selection<H: ManagerHandle>(app: &mut App<H>, delta: i32) {
             app.reset_search();
         }
         app.selected = new;
+        // Landing on the otel-errors row consumes its unread badge and
+        // stops the blink.
+        app.mark_otel_seen_if_selected();
     }
 }
 
